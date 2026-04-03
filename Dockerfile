@@ -1,21 +1,21 @@
-FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
+FROM python:3.11-slim
 
 WORKDIR /app
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    DEBIAN_FRONTEND=noninteractive
-
+# Install system deps for torch/PIL
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3.11 python3-pip git \
+    git curl libgl1 libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
+# Install PyTorch CPU for CI layer caching; CUDA version installed via requirements
 COPY requirements.txt .
-RUN pip3 install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir torch==2.3.0 torchvision --index-url https://download.pytorch.org/whl/cu121 \
+    && pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-RUN mkdir -p /app/outputs
+ENV MODEL_ID=stabilityai/stable-diffusion-3.5-large
+ENV HF_TOKEN=""
 
 EXPOSE 8000
 

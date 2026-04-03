@@ -1,109 +1,106 @@
 """
-Tests for SD Pipeline — prompt engineering and CLIP scorer (pipeline mocked).
+tests/test_pipeline.py — Unit tests for SD pipeline (CPU-only, no model download).
 """
-from __future__ import annotations
 
 import pytest
 from unittest.mock import MagicMock, patch
 from PIL import Image
+import io
+import base64
 
 
-class TestPromptEngineer:
-    def test_build_adds_style_suffix(self):
-        from pipeline.prompt_engineer import PromptEngineer
-        pos, neg = PromptEngineer.build("a cat", style="photorealistic")
-        assert "hyperrealistic" in pos.lower()
-        assert "cat" in pos
+# ─── Helper ────────────────────────────────────────────────────────────────────
 
-    def test_build_negative_contains_base(self):
-        from pipeline.prompt_engineer import PromptEngineer
-        _, neg = PromptEngineer.build("a dog", style="photorealistic")
-        assert "blurry" in neg
-        assert "watermark" in neg
+def _make_dummy_image(w: int = 64, h: int = 64) -> Image.Image:
+    return Image.new("RGB", (w, h), color=(127, 0, 200))
 
-    def test_extract_style_from_prompt(self):
-        from pipeline.prompt_engineer import PromptEngineer
-        prompt = "a mountain landscape --style anime"
-        cleaned, style = PromptEngineer.extract_style(prompt)
-        assert style == "anime"
-        assert "--style" not in cleaned
 
-    def test_extract_style_default(self):
-        from pipeline.prompt_engineer import PromptEngineer
-        cleaned, style = PromptEngineer.extract_style("hello world")
-        assert style == "photorealistic"
+def _b64_to_image(b64: str) -> Image.Image:
+    return Image.open(io.BytesIO(base64.b64decode(b64)))
 
-    def test_batch_prompts(self):
-        from pipeline.prompt_engineer import PromptEngineer
-        results = PromptEngineer.batch_prompts(["cat", "dog", "bird"])
-        assert len(results) == 3
-        for pos, neg in results:
-            assert isinstance(pos, str) and isinstance(neg, str)
+
+# ─── generator.py tests ────────────────────────────────────────────────────────
+
+class TestImageToB64:
+    def test_roundtrip(self):
+        from pipeline.generator import _image_to_b64
+        img = _make_dummy_image()
+        b64 = _image_to_b64(img)
+        recovered = _b64_to_image(b64)
+        assert recovered.size == img.size
+
+
+class TestGenerationConfig:
+    def test_defaults(self):
+        from pipeline.generator import GenerationConfig
+        cfg = GenerationConfig(prompt="a cat")
+        assert cfg.guidance_scale == 7.5
+        assert cfg.num_inference_steps == 28
+        assert cfg.seed is None
 
 
 class TestSDPipeline:
-    @patch("pipeline.sd_pipeline.StableDiffusion3Pipeline")
-    @patch("pipeline.sd_pipeline.torch")
-    def test_generate_returns_result(self, mock_torch, mock_sd_class):
-        from pipeline.sd_pipeline import SDPipeline, GenerationConfig
+    @patch("pipeline.generator.torch.cuda.is_available", return_value=False)
+    @patch("pipeline.generator.torch.backends.mps.is_available", return_value=False)
+    def test_generate_with_mocked_pipe(self, _mps, _cuda):
+        from pipeline.generator import SDPipeline, GenerationConfig
 
-        mock_torch.cuda.is_available.return_value = False
-        mock_torch.backends.mps.is_available.return_value = False
-        mock_torch.bfloat16 = "bfloat16"
+        pipe = SDPipeline(model_id="fake/model")
 
+        # Inject mocked diffusers pipe
+        dummy_image = _make_dummy_image()
         mock_pipe = MagicMock()
-        fake_image = Image.new("RGB", (64, 64), color="red")
-        mock_pipe.return_value.images = [fake_image]
-        mock_sd_class.from_pretrained.return_value = mock_pipe.return_value
+        mock_pipe.return_value.images = [dummy_image]
+        pipe._pipe = mock_pipe
+        pipe._device = "cpu"
 
-        pipeline = SDPipeline(model_id="test/model")
-        config = GenerationConfig(prompt="a red square", num_inference_steps=1)
-        result = pipeline.generate(config)
+        cfg = GenerationConfig(prompt="a scenic mountain", seed=42)
+        result = pipe.generate(cfg)
 
-        assert len(result.images) == 1
-        assert result.latency_ms > 0
+        assert result.seed == 42
+        assert result.prompt == "a scenic mountain"
+        assert result.latency_ms >= 0
+        recovered = _b64_to_image(result.image_b64)
+        assert recovered.size == (64, 64)
 
-    @patch("pipeline.sd_pipeline.StableDiffusion3Pipeline")
-    @patch("pipeline.sd_pipeline.torch")
-    def test_resolve_device_cpu(self, mock_torch, mock_sd_class):
-        from pipeline.sd_pipeline import SDPipeline
-
-        mock_torch.cuda.is_available.return_value = False
-        mock_torch.backends.mps.is_available.return_value = False
-        mock_torch.bfloat16 = "bfloat16"
-        mock_sd_class.from_pretrained.return_value = MagicMock()
-
-        p = SDPipeline(model_id="test/model")
-        assert p.device == "cpu"
+    def test_generate_raises_when_not_loaded(self):
+        from pipeline.generator import SDPipeline, GenerationConfig
+        pipe = SDPipeline()
+        with pytest.raises(RuntimeError, match="not loaded"):
+            pipe.generate(GenerationConfig(prompt="test"))
 
 
-class TestCLIPScorer:
-    @patch("pipeline.clip_scorer.CLIPModel")
-    @patch("pipeline.clip_scorer.CLIPProcessor")
-    @patch("pipeline.clip_scorer.torch")
-    def test_score_returns_float(self, mock_torch, mock_proc_cls, mock_model_cls):
-        from pipeline.clip_scorer import CLIPScorer
+# ─── FastAPI endpoint tests ────────────────────────────────────────────────────
 
-        mock_torch.cuda.is_available.return_value = False
-        mock_torch.backends.mps.is_available.return_value = False
+class TestAPIHealth:
+    def test_health_returns_ok(self):
+        from fastapi.testclient import TestClient
+        import api.main as main_module
 
-        mock_model = MagicMock()
-        mock_model_cls.from_pretrained.return_value = mock_model
-
-        import torch as real_torch
-        mock_torch.no_grad.return_value.__enter__ = lambda s: s
-        mock_torch.no_grad.return_value.__exit__ = MagicMock(return_value=False)
-        mock_torch.sigmoid.return_value.item.return_value = 0.324
-
-        mock_outputs = MagicMock()
-        mock_outputs.logits_per_image = MagicMock()
-        mock_model.return_value = mock_outputs
-
-        mock_proc_cls.from_pretrained.return_value = MagicMock(
-            return_value={"input_ids": MagicMock(), "pixel_values": MagicMock()}
+        # Inject a mock pipeline so lifespan is bypassed
+        mock_pipe = MagicMock()
+        dummy_image = _make_dummy_image()
+        from pipeline.generator import GenerationResult
+        mock_pipe.generate.return_value = GenerationResult(
+            image_b64=_make_dummy_image_b64(),
+            prompt="test",
+            seed=1,
+            latency_ms=100.0,
+            width=64,
+            height=64,
+            steps=1,
+            guidance_scale=7.5,
         )
 
-        scorer = CLIPScorer()
-        img = Image.new("RGB", (224, 224))
-        score = scorer.score(img, "a red square")
-        assert isinstance(score, float)
+        import pipeline.generator as gen_module
+        gen_module._pipeline = mock_pipe
+
+        client = TestClient(main_module.app, raise_server_exceptions=True)
+        resp = client.get("/health")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ok"
+
+
+def _make_dummy_image_b64() -> str:
+    from pipeline.generator import _image_to_b64
+    return _image_to_b64(_make_dummy_image())
