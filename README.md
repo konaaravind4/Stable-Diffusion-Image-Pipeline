@@ -4,12 +4,12 @@ A production-grade image generation pipeline using **Stability AI's Stable Diffu
 
 ## Features
 
-- 🎨 **SD 3.5 Large** — state-of-the-art text-to-image quality
-- ⚡ **Inference optimization** — attention slicing, bfloat16, DDIM scheduling
-- 🔢 **Deterministic generation** — seed-controlled reproducibility
-- 🚀 **FastAPI REST API** — `/generate`, `/generate/batch`, `/health`
-- 📦 **Docker-ready** — one-command deployment
-- ✅ **CI-tested** — CPU-only unit tests with mocked pipeline
+-  **SD 3.5 Large** — state-of-the-art text-to-image quality
+-  **Inference optimization** — attention slicing, bfloat16, DDIM scheduling
+-  **Deterministic generation** — seed-controlled reproducibility
+-  **FastAPI REST API** — `/generate`, `/generate/batch`, `/health`
+-  **Docker-ready** — one-command deployment
+-  **CI-tested** — CPU-only unit tests with mocked pipeline
 
 ## Architecture
 
